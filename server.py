@@ -5,19 +5,19 @@ import os
 import json
 import queue
 import threading
+import subprocess
 
 app = Flask(__name__)
 CORS(app)
 
-DOWNLOAD_DIR = os.path.expanduser("~/storage/downloads/YT downloads")
-
-
+# Use standard Android Download folder path
+DOWNLOAD_DIR = "/sdcard/Download/YT downloads"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 @app.route('/')
 def home():
     return send_file(os.path.join(BASE_DIR, "index.html"))
 
-# Search YouTube directly from Termux
 @app.route('/search', methods=['GET'])
 def search():
     query = request.args.get('q', '').strip()
@@ -48,7 +48,6 @@ def search():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Stream real-time download progress
 @app.route('/download-stream', methods=['POST'])
 def download_stream():
     data = request.json
@@ -83,44 +82,41 @@ def download_stream():
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
-                'restrictfilenames': True,
-                'progress_hooks': [hook]
+                'progress_hooks': [hook],
+                'merge_output_format': 'mp4',  # Always merge into standard MP4 for Android
             }
 
             if dl_type == 'audio':
-                ydl_opts['format'] = 'bestaudio/best'
+                ydl_opts['format'] = 'ba/b'
                 ydl_opts['postprocessors'] = [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
                     'preferredquality': '192',
                 }]
                 ydl_opts['outtmpl'] = os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s')
-                if 'list=' in url and 'v=' not in url:
-                    ydl_opts['playlist_items'] = '1'
-                else:
-                    ydl_opts['noplaylist'] = True
+                ydl_opts['noplaylist'] = not ('list=' in url and 'v=' not in url)
 
             elif dl_type == 'playlist':
                 ydl_opts['outtmpl'] = os.path.join(DOWNLOAD_DIR, '%(playlist_title)s', '%(title)s.%(ext)s')
-                ydl_opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+                ydl_opts['format'] = 'bv*+ba/b'
                 ydl_opts['yes_playlist'] = True
 
             else:  # Single Video
                 ydl_opts['outtmpl'] = os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s')
-                # If a playlist link is provided in single-video mode, download only item 1
-                if 'list=' in url and 'v=' not in url:
-                    ydl_opts['playlist_items'] = '1'
-                else:
-                    ydl_opts['noplaylist'] = True
+                ydl_opts['noplaylist'] = not ('list=' in url and 'v=' not in url)
 
                 if res == 'best':
-                    ydl_opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+                    ydl_opts['format'] = 'bv*+ba/b'
                 else:
-                    ydl_opts['format'] = f'bestvideo[height<={res}][ext=mp4]+bestaudio[ext=m4a]/best[height<={res}][ext=mp4]/best'
+                    ydl_opts['format'] = f'bv*[height<={res}]+ba/b[height<={res}]/b'
 
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
+                
+                # Scan storage so it immediately displays in Android Gallery
+                subprocess.run(['termux-media-scan', '-r', DOWNLOAD_DIR], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
                 q.put({'status': 'finished', 'message': 'Saved to Download/YT downloads!'})
             except Exception as err:
                 q.put({'status': 'error', 'message': str(err)})
@@ -139,4 +135,3 @@ def download_stream():
 
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=5000)
-
