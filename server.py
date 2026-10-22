@@ -1,11 +1,13 @@
-from flask import Flask, request, jsonify, send_file, Response
-from flask_cors import CORS
-import yt_dlp
 import os
 import json
 import queue
-import threading
+import re
+import shutil
 import subprocess
+import threading
+from flask import Flask, request, jsonify, send_file, Response
+from flask_cors import CORS
+import yt_dlp
 
 app = Flask(__name__)
 CORS(app)
@@ -13,6 +15,12 @@ CORS(app)
 # Use standard Android Download folder path
 DOWNLOAD_DIR = "/sdcard/Download/YT downloads"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def clean_ansi(text):
+    """Strips terminal color codes from yt-dlp progress strings."""
+    if not text:
+        return ""
+    return re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', str(text)).strip()
 
 @app.route('/')
 def home():
@@ -50,7 +58,7 @@ def search():
 
 @app.route('/download-stream', methods=['POST'])
 def download_stream():
-    data = request.json
+    data = request.json or {}
     url = data.get('url', '').strip()
     dl_type = data.get('type', 'single')
     res = data.get('resolution', 'best')
@@ -71,8 +79,8 @@ def download_stream():
                 q.put({
                     'status': 'downloading',
                     'percent': pct,
-                    'speed': d.get('_speed_str', 'N/A'),
-                    'eta': d.get('_eta_str', 'N/A'),
+                    'speed': clean_ansi(d.get('_speed_str', 'N/A')),
+                    'eta': clean_ansi(d.get('_eta_str', 'N/A')),
                     'filename': os.path.basename(d.get('filename', ''))
                 })
             elif d['status'] == 'finished':
@@ -114,8 +122,17 @@ def download_stream():
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
                 
-                # Scan storage so it immediately displays in Android Gallery
-                subprocess.run(['termux-media-scan', '-r', DOWNLOAD_DIR], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                # Check if termux-media-scan exists before attempting execution
+                if shutil.which('termux-media-scan'):
+                    try:
+                        subprocess.run(
+                            ['termux-media-scan', '-r', DOWNLOAD_DIR],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            check=False
+                        )
+                    except Exception:
+                        pass  # Fail gracefully if binary exists but execution fails
                 
                 q.put({'status': 'finished', 'message': 'Saved to Download/YT downloads!'})
             except Exception as err:
@@ -135,3 +152,4 @@ def download_stream():
 
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=5000)
+
